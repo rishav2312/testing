@@ -13,7 +13,7 @@ jobs:
   validate-preview-write:
     runs-on: ubuntu-latest
     steps:
-      - name: Process PR and prepare input.json
+      - name: Validate PR body fields and write file/input.json
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -35,11 +35,18 @@ jobs:
               "SPG:"
             ];
 
-            const body = context.payload.pull_request?.body || "";
+            const pr = context.payload.pull_request;
+            const bodyRaw = pr?.body || "";
             const action = context.payload.action;
-            const merged = context.payload.pull_request?.merged;
+            const merged = pr?.merged;
 
-            // parse fields
+            // clean markdown
+            const body = bodyRaw
+              .replace(/\*\*/g, "")
+              .replace(/[_>`~-]/g, "")
+              .replace(/\r\n/g, "\n")
+              .trim();
+
             const lines = body.split(/\r?\n/);
             const result = {};
             const missing = [];
@@ -51,35 +58,41 @@ jobs:
               const after = line.substring(line.toLowerCase().indexOf(label.toLowerCase()) + label.length).trim();
               if (after) return after;
               for (let i = idx + 1; i < Math.min(lines.length, idx + 5); i++) {
-                const c = lines[i].trim();
-                if (c) return c;
+                const cand = lines[i].trim();
+                if (cand) return cand;
               }
               return "";
             }
 
             for (const label of REQUIRED_LABELS) {
-              let v = findValue(label);
-              if (v === null || v === "") {
+              let value = findValue(label);
+              if (value === null) {
                 missing.push(label);
                 continue;
               }
-              v = v.replace(/[*_`>~-]/g, "").replace(/\s+/g, " ").trim();
-              v = v.replace(/^NA$/i, "NA").replace(/^\*\*?\s*NA\s*\*\*?$/i, "NA");
-              result[label.replace(/:$/, "")] = v;
+              value = value.replace(/[*_`>~-]/g, "").trim();
+              const isEmpty = value === "";
+              // ✅ Accept NA as valid
+              const isNA = /^NA$/i.test(value);
+              if (isEmpty) {
+                missing.push(label);
+              } else {
+                result[label.replace(/:$/, "")] = value;
+              }
             }
 
             const jsonContent = JSON.stringify(result, null, 2);
 
-            // 1️⃣ If PR just opened/edited — validate & show preview
+            // 1️⃣ Validate and preview
             if (!merged) {
               if (missing.length > 0) {
                 const msg = [
                   "⚠️ **PR validation failed**",
                   "",
-                  "**Missing or empty fields:**",
-                  ...missing.map(m => `- ${m}`),
+                  "**Missing (empty) fields:**",
+                  ...missing.map(f => `- ${f}`),
                   "",
-                  "Please fill all required fields (or `NA` where not applicable)."
+                  "Please fill all fields (use `NA` if not applicable)."
                 ].join("\n");
 
                 await github.rest.issues.createComment({
@@ -88,24 +101,22 @@ jobs:
                   issue_number: context.issue.number,
                   body: msg
                 });
-                throw new Error("Validation failed");
+
+                throw new Error("Validation failed — one or more fields empty");
               }
 
-              const preview = "🧾 **input.json preview:**\n```json\n" + jsonContent + "\n```\n"
-                + "✅ All fields validated. This file will be written after merge.";
-
+              const preview = "🧾 **input.json preview:**\n```json\n" + jsonContent + "\n```\n✅ All fields validated (NA accepted).";
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
                 body: preview
               });
-
               console.log("Preview posted successfully.");
               return;
             }
 
-            // 2️⃣ If PR merged — actually create file/input.json
+            // 2️⃣ On merge → write file/input.json
             if (merged && action === "closed") {
               const path = "file/input.json";
               const msg = `Add/update ${path} from PR #${context.issue.number} by ${context.actor}`;
@@ -133,8 +144,6 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-                body: "✅ Merged and wrote `file/input.json` successfully."
+                body: "✅ PR merged — `file/input.json` created successfully."
               });
-
-              console.log("input.json committed successfully.");
             }
