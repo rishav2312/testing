@@ -39,7 +39,7 @@ jobs:
               "SPG:"
             ];
             const checkName = "PR Template Validation";
-            const templateImagePath = "/mnt/data/IMG-20251125-WA0000.jpg"; // from your upload
+            const templateImagePath = "/mnt/data/IMG-20251125-WA0000.jpg"; // uploaded file path
             // ---------------------------
 
             const pr = context.payload.pull_request;
@@ -101,6 +101,25 @@ jobs:
             const result = {};
             const missing = [];
 
+            // Helper: detect placeholder/helptext values that should be considered empty
+            function isPlaceholderValue(v) {
+              if (!v) return true;
+              const s = v.trim().toLowerCase();
+              // Accept NA as valid (so treat NA as NOT placeholder)
+              if (/^na$/i.test(s)) return false;
+              // Common placeholder patterns — treat as empty:
+              // - starts with "(" (e.g. "(e.g. ...)")
+              // - contains "e.g." or "eg:" or the word "example"
+              // - contains "choose one", "please fill", or looks like instruction text
+              if (/^\(.+\)$/.test(v.trim())) return true;
+              if (s.includes("e.g.") || s.includes("eg:") || s.includes("example")) return true;
+              if (s.includes("choose one") || s.includes("please fill") || s.includes("please")) return true;
+              // If the value is exactly the typical instruction sentence (very long and verbose), treat as placeholder
+              if (s.length < 3) return false; // very short strings like 'RE' are not placeholders
+              // otherwise treat as non-placeholder
+              return false;
+            }
+
             for (let i = 0; i < lines.length; i++) {
               const line = lines[i].trim();
               const labelMatch = REQUIRED_LABELS.find(label =>
@@ -120,29 +139,36 @@ jobs:
                 }
               }
 
-              value = value.replace(/[*_`>~-]/g, "").replace(/\s+/g, " ").trim();
+              // Clean value
+              value = (value || "").replace(/[*_`>~-]/g, "").replace(/\s+/g, " ").trim();
+
+              // Prevent label bleed (value starting with another label)
               for (const lbl of REQUIRED_LABELS) {
                 if (value.toLowerCase().startsWith(lbl.toLowerCase()) && value.toLowerCase() !== "na") {
                   value = "";
                 }
               }
 
-              const isEmpty = !value;
-              const isNA = /^NA$/i.test(value);
-              if (isEmpty) missing.push(labelMatch.replace(/:$/, ""));
-              else result[labelMatch.replace(/:$/, "")] = value;
+              // Treat placeholder/helptext as empty
+              if (isPlaceholderValue(value)) {
+                // If value is literally NA, isPlaceholderValue returns false above and NA will be accepted
+                // Otherwise treat as empty -> add to missing
+                missing.push(labelMatch.replace(/:$/, ""));
+              } else {
+                result[labelMatch.replace(/:$/, "")] = value;
+              }
             }
 
-            // If validation failed → fail the check and stop
+            // If validation failed → fail the check and stop (post comment + failed check)
             if (missing.length > 0) {
               const missingList = missing.map(m => `- ${m}`).join("\n");
               const commentBody = [
                 "⚠️ **PR validation failed**",
                 "",
-                "**Missing (empty) fields:**",
+                "**Missing (empty) fields or placeholders detected:**",
                 missingList,
                 "",
-                "Please fill all fields (use `NA` if not applicable)."
+                "Please fill all fields with real values (use `NA` if not applicable). Placeholder text like `(e.g. ...)` or `example` will be considered empty."
               ].join("\n");
 
               await github.rest.issues.createComment({
@@ -162,7 +188,7 @@ jobs:
                 output: {
                   title: "Validation failed",
                   summary: `Missing ${missing.length} field(s).`,
-                  text: `Missing:\n${missingList}`
+                  text: `Missing or placeholder fields:\n${missingList}`
                 }
               });
 
