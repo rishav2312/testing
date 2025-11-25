@@ -1,25 +1,23 @@
-name: Validate PR & Create input.json
+name: Validate PR & Preview input.json
 
 on:
   pull_request_target:
-    types: [opened, edited, reopened]
+    types: [opened, edited, reopened, closed]
 
-# Ensure the workflow has permissions to write repository contents and comment on PRs
 permissions:
   contents: write
   issues: write
   pull-requests: write
 
 jobs:
-  validate-and-write:
+  validate-preview-write:
     runs-on: ubuntu-latest
     steps:
-      - name: Validate PR body fields and write file/input.json
+      - name: Process PR and prepare input.json
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            // REQUIRED field labels exactly as expected (include colon)
             const REQUIRED_LABELS = [
               "Channels:",
               "Headless:",
@@ -37,116 +35,106 @@ jobs:
               "SPG:"
             ];
 
-            // PR body (string)
-            const body = (context.payload.pull_request && context.payload.pull_request.body) || "";
-            if (!body || body.trim().length === 0) {
-              // Post helpful comment and fail
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: "❌ PR body is empty — please include the PR Input Template in the description and fill all fields."
-              });
-              throw new Error("PR body empty");
-            }
+            const body = context.payload.pull_request?.body || "";
+            const action = context.payload.action;
+            const merged = context.payload.pull_request?.merged;
 
-            // Split lines for scanning
+            // parse fields
             const lines = body.split(/\r?\n/);
+            const result = {};
+            const missing = [];
 
-            function findValueForLabel(label) {
-              // find first line that includes the label (case-insensitive)
+            function findValue(label) {
               const idx = lines.findIndex(l => l.toLowerCase().includes(label.toLowerCase()));
               if (idx === -1) return null;
-
-              // get content after label on same line
               const line = lines[idx];
               const after = line.substring(line.toLowerCase().indexOf(label.toLowerCase()) + label.length).trim();
-
-              if (after && after.length > 0) return after;
-
-              // otherwise search subsequent lines for the first non-empty line (useful for multiline fields)
-              for (let i = idx + 1; i < Math.min(lines.length, idx + 6); i++) {
-                const cand = lines[i].trim();
-                if (cand.length > 0) return cand;
+              if (after) return after;
+              for (let i = idx + 1; i < Math.min(lines.length, idx + 5); i++) {
+                const c = lines[i].trim();
+                if (c) return c;
               }
-              return ""; // found label but no value
+              return "";
             }
 
-            const missing = [];
-            const result = {};
             for (const label of REQUIRED_LABELS) {
-              const value = findValueForLabel(label);
-              if (value === null) {
-                missing.push(`Missing field (label not found): ${label}`);
-              } else if (value === "") {
-                missing.push(`Empty value for: ${label}`);
-              } else {
-                // strip potential surrounding markdown like **text**
-                const cleaned = value.replace(/^\*\*(.*)\*\*$/, "$1").trim();
-                const key = label.replace(/:$/, "").trim();
-                result[key] = cleaned;
+              let v = findValue(label);
+              if (v === null || v === "") {
+                missing.push(label);
+                continue;
               }
+              v = v.replace(/[*_`>~-]/g, "").replace(/\s+/g, " ").trim();
+              v = v.replace(/^NA$/i, "NA").replace(/^\*\*?\s*NA\s*\*\*?$/i, "NA");
+              result[label.replace(/:$/, "")] = v;
             }
-
-            if (missing.length > 0) {
-              const commentBody = [
-                "⚠️ **PR template validation failed**. Please fill all required fields in the PR description.",
-                "",
-                "**Problems found:**",
-                ...missing.map(m => `- ${m}`),
-                "",
-                "Make sure you used the PR Input Template and filled each bold field (or `NA` where not applicable). After updating the PR description this check will re-run automatically."
-              ].join("\n");
-
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: commentBody
-              });
-
-              throw new Error("PR validation failed");
-            }
-
-            // All fields present — create JSON content
-            // Add the uploaded sample image path as a url field (the executor will transform it as needed)
-            result["TemplateImageUrl"] = "/mnt/data/IMG-20251125-WA0000.jpg";
 
             const jsonContent = JSON.stringify(result, null, 2);
 
-            // Path to write: file/input.json
-            const path = "file/input.json";
-            const message = `Add/update ${path} from PR #${context.issue.number} by ${context.actor}`;
+            // 1️⃣ If PR just opened/edited — validate & show preview
+            if (!merged) {
+              if (missing.length > 0) {
+                const msg = [
+                  "⚠️ **PR validation failed**",
+                  "",
+                  "**Missing or empty fields:**",
+                  ...missing.map(m => `- ${m}`),
+                  "",
+                  "Please fill all required fields (or `NA` where not applicable)."
+                ].join("\n");
 
-            // Check if file already exists to supply sha if needed
-            let sha = undefined;
-            try {
-              const getResp = await github.rest.repos.getContent({
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: msg
+                });
+                throw new Error("Validation failed");
+              }
+
+              const preview = "🧾 **input.json preview:**\n```json\n" + jsonContent + "\n```\n"
+                + "✅ All fields validated. This file will be written after merge.";
+
+              await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                path: path
+                issue_number: context.issue.number,
+                body: preview
               });
-              if (getResp && getResp.data && getResp.data.sha) {
-                sha = getResp.data.sha;
-              }
-            } catch (err) {
-              // file likely doesn't exist — we'll create it
+
+              console.log("Preview posted successfully.");
+              return;
             }
 
-            // create or update file
-            await github.rest.repos.createOrUpdateFileContents({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              path: path,
-              message: message,
-              content: Buffer.from(jsonContent).toString('base64'),
-              sha: sha
-            });
+            // 2️⃣ If PR merged — actually create file/input.json
+            if (merged && action === "closed") {
+              const path = "file/input.json";
+              const msg = `Add/update ${path} from PR #${context.issue.number} by ${context.actor}`;
 
-            // final success comment
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: `✅ PR template validated and \`${path}\` created/updated with the provided values.`
-            });
+              let sha;
+              try {
+                const res = await github.rest.repos.getContent({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  path
+                });
+                sha = res.data.sha;
+              } catch {}
+
+              await github.rest.repos.createOrUpdateFileContents({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                path,
+                message: msg,
+                content: Buffer.from(jsonContent).toString("base64"),
+                sha
+              });
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: "✅ Merged and wrote `file/input.json` successfully."
+              });
+
+              console.log("input.json committed successfully.");
+            }
