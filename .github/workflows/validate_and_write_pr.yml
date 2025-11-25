@@ -40,50 +40,64 @@ jobs:
             const action = context.payload.action;
             const merged = pr?.merged;
 
-            // clean markdown
+            // Normalize and strip markdown
             const body = bodyRaw
               .replace(/\*\*/g, "")
               .replace(/[_>`~-]/g, "")
               .replace(/\r\n/g, "\n")
               .trim();
 
-            const lines = body.split(/\r?\n/);
+            const lines = body.split("\n");
             const result = {};
             const missing = [];
 
-            function findValue(label) {
-              const idx = lines.findIndex(l => l.toLowerCase().includes(label.toLowerCase()));
-              if (idx === -1) return null;
-              const line = lines[idx];
-              const after = line.substring(line.toLowerCase().indexOf(label.toLowerCase()) + label.length).trim();
-              if (after) return after;
-              for (let i = idx + 1; i < Math.min(lines.length, idx + 5); i++) {
-                const cand = lines[i].trim();
-                if (cand) return cand;
-              }
-              return "";
-            }
+            // Parse each label robustly
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i].trim();
+              const labelMatch = REQUIRED_LABELS.find(label =>
+                line.toLowerCase().startsWith(label.toLowerCase())
+              );
 
-            for (const label of REQUIRED_LABELS) {
-              let value = findValue(label);
-              if (value === null) {
-                missing.push(label);
-                continue;
-              }
-              value = value.replace(/[*_`>~-]/g, "").trim();
-              const isEmpty = value === "";
-              // ✅ Accept NA as valid
-              const isNA = /^NA$/i.test(value);
-              if (isEmpty) {
-                missing.push(label);
-              } else {
-                result[label.replace(/:$/, "")] = value;
+              if (labelMatch) {
+                let value = line.substring(labelMatch.length).trim();
+
+                // If blank, look ahead a few lines for a non-empty non-label line
+                if (!value) {
+                  let j = i + 1;
+                  while (j < lines.length && !lines[j].trim().match(/^[A-Z][A-Za-z ]*:/)) {
+                    if (lines[j].trim()) {
+                      value = lines[j].trim();
+                      break;
+                    }
+                    j++;
+                  }
+                }
+
+                // Clean extra markdown and spaces
+                value = value.replace(/[*_`>~-]/g, "").replace(/\s+/g, " ").trim();
+
+                // Prevent label bleed (value starting with another label)
+                for (const lbl of REQUIRED_LABELS) {
+                  if (value.toLowerCase().startsWith(lbl.toLowerCase()) && value !== "NA") {
+                    value = "";
+                  }
+                }
+
+                const isEmpty = !value;
+                const isNA = /^NA$/i.test(value);
+
+                if (isEmpty) {
+                  missing.push(labelMatch);
+                } else {
+                  // Accept NA as valid
+                  result[labelMatch.replace(/:$/, "")] = value;
+                }
               }
             }
 
             const jsonContent = JSON.stringify(result, null, 2);
 
-            // 1️⃣ Validate and preview
+            // 1️⃣ Validate and preview before merge
             if (!merged) {
               if (missing.length > 0) {
                 const msg = [
@@ -102,7 +116,7 @@ jobs:
                   body: msg
                 });
 
-                throw new Error("Validation failed — one or more fields empty");
+                throw new Error("Validation failed — some fields empty");
               }
 
               const preview = "🧾 **input.json preview:**\n```json\n" + jsonContent + "\n```\n✅ All fields validated (NA accepted).";
@@ -116,10 +130,10 @@ jobs:
               return;
             }
 
-            // 2️⃣ On merge → write file/input.json
+            // 2️⃣ Commit after merge
             if (merged && action === "closed") {
               const path = "file/input.json";
-              const msg = `Add/update ${path} from PR #${context.issue.number} by ${context.actor}`;
+              const message = `Add/update ${path} from PR #${context.issue.number} by ${context.actor}`;
 
               let sha;
               try {
@@ -135,7 +149,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 path,
-                message: msg,
+                message,
                 content: Buffer.from(jsonContent).toString("base64"),
                 sha
               });
