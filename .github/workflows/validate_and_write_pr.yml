@@ -220,10 +220,9 @@ jobs:
             const jsonContent = JSON.stringify(result, null, 2);
 
             // Determine which token and target to use
-            let commitOwner, commitRepo, token;
+            let commitOwner, commitRepo, token, commitBranch;
             if (isFork) {
               // Use PAT for fork writes
-              token = context.token; // Try to use fork token if available
               const patToken = process.env.PAT_TOKEN;
               if (!patToken) {
                 console.log("PAT_TOKEN not set — cannot commit to fork. Validation only.");
@@ -253,12 +252,43 @@ jobs:
               commitOwner = forkOwner;
               commitRepo = forkRepo;
               token = patToken;
-              console.log(`Using PAT to commit to fork: ${commitOwner}/${commitRepo}`);
+              // For fork commits, use the default branch (main/master) not the PR branch
+              commitBranch = pr.head.repo.default_branch || "main";
+              
+              console.log(`\n=== Fork Configuration ===`);
+              console.log(`Fork: ${commitOwner}/${commitRepo}`);
+              console.log(`Default branch: ${commitBranch}`);
+              console.log(`PR branch: ${headBranch}`);
+              console.log(`PAT token present: ✓`);
+              
+              // Test PAT token access to fork
+              console.log(`\nTesting PAT token access to fork...`);
+              try {
+                const testResponse = await fetch(`https://api.github.com/repos/${commitOwner}/${commitRepo}`, {
+                  method: 'GET',
+                  headers: {
+                    'Authorization': `token ${token}`,
+                    'Accept': 'application/vnd.github.v3+json'
+                  }
+                });
+                const testData = await testResponse.text();
+                if (testResponse.ok) {
+                  console.log(`✓ PAT token has access to fork repository`);
+                } else {
+                  console.log(`✗ PAT token cannot access fork: ${testResponse.status}`);
+                  console.log(`Response: ${testData}`);
+                  throw new Error(`PAT token does not have access to ${commitOwner}/${commitRepo}`);
+                }
+              } catch (e) {
+                console.log(`✗ Failed to verify PAT token: ${e.message}`);
+                throw e;
+              }
             } else {
               commitOwner = baseOwner;
               commitRepo = baseRepo;
               token = context.token;
-              console.log(`Using GITHUB_TOKEN to commit to base repo: ${commitOwner}/${commitRepo}`);
+              commitBranch = headBranch;
+              console.log(`Using GITHUB_TOKEN to commit to base repo: ${commitOwner}/${commitRepo} on branch ${commitBranch}`);
             }
 
             // Helper function to make GitHub API calls with PAT token
@@ -309,15 +339,15 @@ jobs:
 
               console.log(`\n=== Processing: ${filePath} ===`);
               console.log(`Target: ${commitOwner}/${commitRepo}`);
-              console.log(`Branch: ${headBranch}`);
+              console.log(`Branch: ${commitBranch}`);
               console.log(`Token: ${usePatToken ? 'PAT' : 'GITHUB_TOKEN'}`);
 
               let sha = null;
               try {
-                console.log(`Checking if file exists...`);
+                console.log(`Checking if file exists on branch ${commitBranch}...`);
                 const existingFile = await githubApiCall(
                   'GET',
-                  `/repos/${commitOwner}/${commitRepo}/contents/${encodedPath}?ref=${encodeURIComponent(headBranch)}`,
+                  `/repos/${commitOwner}/${commitRepo}/contents/${encodedPath}?ref=${encodeURIComponent(commitBranch)}`,
                   null,
                   usePatToken
                 );
@@ -334,7 +364,7 @@ jobs:
                 const putPayload = {
                   message,
                   content: Buffer.from(jsonContent).toString("base64"),
-                  branch: headBranch
+                  branch: commitBranch
                 };
                 if (sha) {
                   putPayload.sha = sha;
@@ -378,12 +408,12 @@ jobs:
               output: {
                 title: "Validation succeeded",
                 summary: `Created ${createdPaths.length} file(s).`,
-                text: `${locationInfo}:\n${createdPaths.map(p => `- ${p}`).join("\n")}`
+                text: `${locationInfo} (branch: ${commitBranch}):\n${createdPaths.map(p => `- ${p}`).join("\n")}`
               }
             });
 
             const commentPrefix = isFork 
-              ? `✅ Validation passed. Committed to your fork:\n`
+              ? `✅ Validation passed. Committed to your fork's **${commitBranch}** branch:\n`
               : `✅ Validation passed. Committed to base repo:\n`;
 
             await github.rest.issues.createComment({
