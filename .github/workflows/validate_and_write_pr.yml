@@ -261,15 +261,30 @@ jobs:
               console.log(`Using GITHUB_TOKEN to commit to base repo: ${commitOwner}/${commitRepo}`);
             }
 
-            // Use appropriate github client for commit
-            let commitClient;
-            if (isFork) {
-              // For forks, create new client with PAT token
-              const { Octokit } = require("@actions/github/lib/utils");
-              commitClient = new Octokit({ auth: token });
-            } else {
-              // For base repo, use default github client
-              commitClient = github;
+            // Helper function to make GitHub API calls with PAT token
+            async function githubApiCall(method, endpoint, data = null, usePatToken = false) {
+              const tokenToUse = usePatToken ? token : context.token;
+              const url = `https://api.github.com${endpoint}`;
+              
+              const options = {
+                method,
+                headers: {
+                  'Authorization': `token ${tokenToUse}`,
+                  'Accept': 'application/vnd.github.v3+json',
+                  'Content-Type': 'application/json'
+                }
+              };
+
+              if (data) {
+                options.body = JSON.stringify(data);
+              }
+
+              const response = await fetch(url, options);
+              if (!response.ok && response.status !== 404) {
+                throw new Error(`API call failed: ${response.status} ${response.statusText}`);
+              }
+              
+              return response.ok ? await response.json() : null;
             }
 
             // Commit to each detected businessConfig/<X> folder
@@ -277,29 +292,36 @@ jobs:
             for (const target of Array.from(targets)) {
               const filePath = `${target}/input.json`;
               const message = `Auto-generate ${filePath} for PR #${prNumber}`;
+              const usePatToken = isFork;
 
-              let sha;
+              let sha = null;
               try {
-                const res = await commitClient.rest.repos.getContent({
-                  owner: commitOwner,
-                  repo: commitRepo,
-                  path: filePath,
-                  ref: headBranch
-                });
-                sha = res.data.sha;
+                // Get existing file SHA if it exists
+                const existingFile = await githubApiCall(
+                  'GET',
+                  `/repos/${commitOwner}/${commitRepo}/contents/${filePath}?ref=${headBranch}`,
+                  null,
+                  usePatToken
+                );
+                if (existingFile) {
+                  sha = existingFile.sha;
+                }
               } catch (e) {
                 console.log(`File ${filePath} does not exist yet`);
               }
 
-              await commitClient.rest.repos.createOrUpdateFileContents({
-                owner: commitOwner,
-                repo: commitRepo,
-                path: filePath,
-                message,
-                content: Buffer.from(jsonContent).toString("base64"),
-                sha,
-                branch: headBranch
-              });
+              // Create or update file
+              await githubApiCall(
+                'PUT',
+                `/repos/${commitOwner}/${commitRepo}/contents/${filePath}`,
+                {
+                  message,
+                  content: Buffer.from(jsonContent).toString("base64"),
+                  branch: headBranch,
+                  ...(sha && { sha })
+                },
+                usePatToken
+              );
 
               createdPaths.push(filePath);
               console.log(`Created/Updated: ${filePath}`);
