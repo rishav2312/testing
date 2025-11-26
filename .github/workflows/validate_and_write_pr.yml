@@ -68,6 +68,12 @@ jobs:
               per_page: 300
             });
 
+            console.log(`\n=== PR Changed Files ===`);
+            console.log(`Total files changed: ${filesResp.data.length}`);
+            filesResp.data.forEach(f => {
+              console.log(`  - ${f.filename} (${f.status})`);
+            });
+
             // Collect target directories (businessConfig/<X>)
             const targets = new Set();
             for (const f of filesResp.data) {
@@ -77,6 +83,9 @@ jobs:
                 targets.add(`businessConfig/${segs[1]}`);
               }
             }
+
+            console.log(`\nTarget businessConfig directories:`);
+            targets.forEach(t => console.log(`  - ${t}`));
 
             // ✅ Skip workflow entirely if nothing under businessConfig/
             if (targets.size === 0) {
@@ -344,10 +353,9 @@ jobs:
               let sha = null;
               try {
                 console.log(`Checking if file exists on branch ${commitBranch}...`);
-                const refParam = `?ref=${encodeURIComponent(commitBranch)}`;
                 const existingFile = await githubApiCall(
                   'GET',
-                  `/repos/${commitOwner}/${commitRepo}/contents/${encodedPath}${refParam}`,
+                  `/repos/${commitOwner}/${commitRepo}/contents/${encodedPath}?ref=${encodeURIComponent(commitBranch)}`,
                   null,
                   usePatToken
                 );
@@ -370,12 +378,9 @@ jobs:
                   putPayload.sha = sha;
                 }
                 
-                // Add branch as query parameter in URL (some API versions require this)
-                const branchParam = `?branch=${encodeURIComponent(commitBranch)}`;
-                
                 const result = await githubApiCall(
                   'PUT',
-                  `/repos/${commitOwner}/${commitRepo}/contents/${encodedPath}${branchParam}`,
+                  `/repos/${commitOwner}/${commitRepo}/contents/${encodedPath}`,
                   putPayload,
                   usePatToken
                 );
