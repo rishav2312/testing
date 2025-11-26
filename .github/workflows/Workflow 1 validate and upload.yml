@@ -1,0 +1,274 @@
+name: Validate PR Template & Upload Artifact
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  checks: write
+
+jobs:
+  validate-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR template and upload artifact
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // ---------------------------
+            // Config
+            // ---------------------------
+            const REQUIRED_LABELS = [
+              "Channels:",
+              "Headless:",
+              "Business Issue:",
+              "Crew Name:",
+              "Product Owner Name:",
+              "Product Owner Email:",
+              "Tech Lead Name:",
+              "Tech Lead Email:",
+              "Crew Lead Name:",
+              "Crew Lead Email:",
+              "Team Distribution List Email:",
+              "Commando Brief:",
+              "Comments:",
+              "SPG:"
+            ];
+            const checkName = "PR Template Validation";
+            // ---------------------------
+
+            const pr = context.payload.pull_request;
+            if (!pr) throw new Error("No pull request found in context.");
+
+            const baseOwner = context.repo.owner;
+            const baseRepo = context.repo.repo;
+            const headSha = pr.head.sha;
+            const prNumber = pr.number;
+
+            // Get the list of changed files
+            const filesResp = await github.rest.pulls.listFiles({
+              owner: baseOwner,
+              repo: baseRepo,
+              pull_number: prNumber,
+              per_page: 300
+            });
+
+            console.log(`\n=== PR Changed Files ===`);
+            console.log(`Total files changed: ${filesResp.data.length}`);
+            filesResp.data.forEach(f => {
+              console.log(`  - ${f.filename}`);
+            });
+
+            // Collect target directories (businessConfig/<X>)
+            const targets = new Set();
+            for (const f of filesResp.data) {
+              const p = f.filename;
+              const segs = p.split("/");
+              if (segs.length >= 2 && segs[0] === "businessConfig") {
+                targets.add(`businessConfig/${segs[1]}`);
+              }
+            }
+
+            console.log(`\nTarget businessConfig directories:`);
+            targets.forEach(t => console.log(`  - ${t}`));
+
+            // ✅ Skip if nothing under businessConfig/
+            if (targets.size === 0) {
+              console.log("No files under businessConfig/ — skipping validation.");
+              await github.rest.checks.create({
+                owner: baseOwner,
+                repo: baseRepo,
+                name: checkName,
+                head_sha: headSha,
+                status: "completed",
+                conclusion: "success",
+                output: {
+                  title: "Skipped",
+                  summary: "No businessConfig/ changes detected.",
+                  text: "This PR does not modify any businessConfig/ paths."
+                }
+              });
+              return;
+            }
+
+            // Normalize PR body
+            const bodyRaw = pr.body || "";
+            const body = bodyRaw
+              .replace(/\*\*/g, "")
+              .replace(/[_>`~]/g, "")
+              .replace(/\r\n/g, "\n")
+              .trim();
+
+            const lines = body.split("\n");
+            const result = {};
+            const missing = [];
+
+            // Helper: detect placeholder values
+            function isPlaceholderValue(v) {
+              if (!v) return true;
+              const s = v.trim().toLowerCase();
+              if (/^na$/i.test(s)) return false;
+              if (/^\(.+\)$/i.test(v.trim())) return true;
+              if (/e\.g\.|eg:|example|choose one|please fill|please enter|please select/i.test(s)) {
+                return true;
+              }
+              if (s.length < 2) return false;
+              return false;
+            }
+
+            // Parse PR fields
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i].trim();
+              
+              const labelMatch = REQUIRED_LABELS.find(label =>
+                line.toLowerCase().startsWith(label.toLowerCase())
+              );
+              if (!labelMatch) continue;
+
+              let value = line.substring(labelMatch.length).trim();
+              
+              if (!value) {
+                let j = i + 1;
+                while (j < lines.length) {
+                  const nextLine = lines[j].trim();
+                  if (REQUIRED_LABELS.some(lbl => 
+                    nextLine.toLowerCase().startsWith(lbl.toLowerCase())
+                  )) {
+                    break;
+                  }
+                  if (nextLine && nextLine.length > 0) {
+                    value = nextLine;
+                    break;
+                  }
+                  j++;
+                }
+              }
+
+              value = (value || "")
+                .replace(/[*_`>~-]/g, "")
+                .replace(/\s+/g, " ")
+                .trim();
+
+              if (isPlaceholderValue(value)) {
+                missing.push(labelMatch.replace(/:$/, ""));
+              } else {
+                result[labelMatch.replace(/:$/, "")] = value;
+              }
+            }
+
+            // Validation failed
+            if (missing.length > 0) {
+              const missingList = missing.map(m => `- ${m}`).join("\n");
+              const commentBody = [
+                "⚠️ **PR validation failed**",
+                "",
+                "**Missing or placeholder fields:**",
+                missingList,
+                "",
+                "Please fill all fields with real values. Use `NA` if not applicable."
+              ].join("\n");
+
+              await github.rest.issues.createComment({
+                owner: baseOwner,
+                repo: baseRepo,
+                issue_number: prNumber,
+                body: commentBody
+              });
+
+              await github.rest.checks.create({
+                owner: baseOwner,
+                repo: baseRepo,
+                name: checkName,
+                head_sha: headSha,
+                status: "completed",
+                conclusion: "failure",
+                output: {
+                  title: "Validation failed",
+                  summary: `Missing ${missing.length} field(s).`,
+                  text: `Missing fields:\n${missingList}`
+                }
+              });
+
+              throw new Error("Validation failed");
+            }
+
+            // Validation passed
+            console.log(`\n✓ Validation passed`);
+
+            // Create artifact payload
+            const artifactPayload = {
+              prNumber,
+              targets: Array.from(targets),
+              data: result,
+              timestamp: new Date().toISOString()
+            };
+
+            // Export for next step
+            core.exportVariable('VALIDATION_PASSED', 'true');
+            core.exportVariable('ARTIFACT_PAYLOAD', JSON.stringify(artifactPayload));
+            core.exportVariable('PR_NUMBER', prNumber.toString());
+
+      - name: Upload artifact with PR data
+        if: env.VALIDATION_PASSED == 'true'
+        run: |
+          # Create artifact directory
+          mkdir -p artifact_data
+          
+          # Save payload to file
+          cat > artifact_data/payload.json << 'EOF'
+          ${{ env.ARTIFACT_PAYLOAD }}
+          EOF
+          
+          cat artifact_data/payload.json
+
+      - name: Upload artifact
+        if: env.VALIDATION_PASSED == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-${{ env.PR_NUMBER }}-input-json
+          path: artifact_data/payload.json
+          retention-days: 30
+
+      - name: Post validation success
+        if: env.VALIDATION_PASSED == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pr = context.payload.pull_request;
+            const checkName = "PR Template Validation";
+            
+            const payload = JSON.parse(process.env.ARTIFACT_PAYLOAD);
+            const filesList = payload.targets.map(t => `- ${t}/input.json`).join('\n');
+            
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: checkName,
+              head_sha: pr.head.sha,
+              status: "completed",
+              conclusion: "success",
+              output: {
+                title: "Validation succeeded",
+                summary: `Ready to merge (${payload.targets.length} file(s) to create)`,
+                text: filesList
+              }
+            });
+
+            const body = [
+              "✅ **Validation passed**",
+              "",
+              "When this PR is merged, the following files will be created:",
+              filesList
+            ].join("\n");
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body: body
+            });
