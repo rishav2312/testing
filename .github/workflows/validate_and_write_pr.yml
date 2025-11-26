@@ -44,20 +44,26 @@ jobs:
             const pr = context.payload.pull_request;
             if (!pr) throw new Error("No pull request found in context.");
 
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
+            const baseOwner = context.repo.owner;
+            const baseRepo = context.repo.repo;
             const headBranch = pr.head.ref;
             const headSha = pr.head.sha;
             const prNumber = pr.number;
 
             // Check if PR is from a fork
             const isFork = pr.head.repo.full_name !== pr.base.repo.full_name;
+            const forkFullName = pr.head.repo.full_name;
+            const [forkOwner, forkRepo] = forkFullName.split('/');
+            
             console.log(`Fork PR: ${isFork}`);
+            if (isFork) {
+              console.log(`Fork owner: ${forkOwner}, Fork repo: ${forkRepo}`);
+            }
 
             // Get the list of changed files
             const filesResp = await github.rest.pulls.listFiles({
-              owner,
-              repo,
+              owner: baseOwner,
+              repo: baseRepo,
               pull_number: prNumber,
               per_page: 300
             });
@@ -76,8 +82,8 @@ jobs:
             if (targets.size === 0) {
               console.log("No files under businessConfig/ — skipping validation and commit.");
               await github.rest.checks.create({
-                owner,
-                repo,
+                owner: baseOwner,
+                repo: baseRepo,
                 name: checkName,
                 head_sha: headSha,
                 status: "completed",
@@ -188,15 +194,15 @@ jobs:
               ].join("\n");
 
               await github.rest.issues.createComment({
-                owner,
-                repo,
+                owner: baseOwner,
+                repo: baseRepo,
                 issue_number: prNumber,
                 body: commentBody
               });
 
               await github.rest.checks.create({
-                owner,
-                repo,
+                owner: baseOwner,
+                repo: baseRepo,
                 name: checkName,
                 head_sha: headSha,
                 status: "completed",
@@ -213,43 +219,13 @@ jobs:
 
             const jsonContent = JSON.stringify(result, null, 2);
 
-            // Handle forked PRs separately
-            if (isFork) {
-              console.log("PR is from a fork — validation passed but skipping auto-commit.");
-              
-              await github.rest.checks.create({
-                owner,
-                repo,
-                name: checkName,
-                head_sha: headSha,
-                status: "completed",
-                conclusion: "success",
-                output: {
-                  title: "Validation succeeded (fork PR)",
-                  summary: "Validation passed. Auto-commit skipped for fork PRs.",
-                  text: "This PR is from a forked repository. Maintainers will need to manually commit input.json or you can push the changes directly to the fork."
-                }
-              });
+            // Determine commit target (fork or base repo)
+            const commitOwner = isFork ? forkOwner : baseOwner;
+            const commitRepo = isFork ? forkRepo : baseRepo;
 
-              await github.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number: prNumber,
-                body: [
-                  "✅ **Validation passed** (fork PR)",
-                  "",
-                  "Your PR template is valid! However, since this PR is from a forked repository, the workflow cannot auto-commit files.",
-                  "",
-                  "**Next steps:**",
-                  "- Repository maintainers can manually commit the `input.json` file, or",
-                  "- You can push the changes directly to your fork and we'll auto-commit once merged to this repo"
-                ].join("\n")
-              });
+            console.log(`Committing to: ${commitOwner}/${commitRepo} on branch ${headBranch}`);
 
-              return;
-            }
-
-            // Commit to each detected businessConfig/<X> folder (internal PRs only)
+            // Commit to each detected businessConfig/<X> folder
             const createdPaths = [];
             for (const target of Array.from(targets)) {
               const filePath = `${target}/input.json`;
@@ -258,19 +234,20 @@ jobs:
               let sha;
               try {
                 const res = await github.rest.repos.getContent({
-                  owner,
-                  repo,
+                  owner: commitOwner,
+                  repo: commitRepo,
                   path: filePath,
                   ref: headBranch
                 });
                 sha = res.data.sha;
               } catch (e) {
                 // File doesn't exist yet, which is fine
+                console.log(`File ${filePath} does not exist yet`);
               }
 
               await github.rest.repos.createOrUpdateFileContents({
-                owner,
-                repo,
+                owner: commitOwner,
+                repo: commitRepo,
                 path: filePath,
                 message,
                 content: Buffer.from(jsonContent).toString("base64"),
@@ -279,28 +256,37 @@ jobs:
               });
 
               createdPaths.push(filePath);
+              console.log(`Created/Updated: ${filePath}`);
             }
 
-            // Success check for internal PRs
+            // Success check
+            const checkSummary = isFork 
+              ? `Created ${createdPaths.length} file(s) in fork.`
+              : `Created ${createdPaths.length} file(s).`;
+
             await github.rest.checks.create({
-              owner,
-              repo,
+              owner: baseOwner,
+              repo: baseRepo,
               name: checkName,
               head_sha: headSha,
               status: "completed",
               conclusion: "success",
               output: {
                 title: "Validation succeeded",
-                summary: `Created ${createdPaths.length} file(s).`,
+                summary: checkSummary,
                 text: `Committed to branch ${headBranch}:\n${createdPaths.map(p => `- ${p}`).join("\n")}`
               }
             });
 
+            const commentPrefix = isFork 
+              ? `✅ Validation passed (fork PR). Committed file(s) to your fork:\n`
+              : `✅ Validation passed. Committed file(s):\n`;
+
             await github.rest.issues.createComment({
-              owner,
-              repo,
+              owner: baseOwner,
+              repo: baseRepo,
               issue_number: prNumber,
-              body: `✅ Validation passed. Committed file(s):\n${createdPaths.map(p => `- ${p}`).join("\n")}`
+              body: `${commentPrefix}${createdPaths.map(p => `- ${p}`).join("\n")}`
             });
 
             console.log("Committed:", createdPaths);
