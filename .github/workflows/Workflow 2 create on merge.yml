@@ -137,14 +137,16 @@ jobs:
           echo "Committing changes..."
           git commit -m "Auto-generate input.json from PR #$PR_NUMBER"
           
-          # Get the target branch from the workflow event
-          TARGET_BRANCH="${{ github.event.workflow_run.head_branch }}"
-          if [ -z "$TARGET_BRANCH" ]; then
-            TARGET_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-          fi
+          echo "Pushing changes..."
           
-          echo "Pushing to branch: $TARGET_BRANCH"
-          git push origin "$TARGET_BRANCH"
+          # Get default branch of base repo
+          DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@refs/remotes/origin/@@')
+          echo "Base repo default branch: $DEFAULT_BRANCH"
+          
+          # Push to default branch (not to fork branch)
+          git push origin "HEAD:$DEFAULT_BRANCH"
+          
+          echo "✅ Pushed to $DEFAULT_BRANCH"
           
           echo ""
           echo "✅ Successfully created and pushed:"
