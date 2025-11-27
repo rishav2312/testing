@@ -104,18 +104,37 @@ jobs:
             exit 0
           fi
           
-          # Check for changes
-          if git diff --quiet; then
-            echo "No changes to commit"
-            exit 0
-          fi
+          echo ""
+          echo "Files created:"
+          printf '%s\n' "${CREATED_FILES[@]}"
+          
+          # Check git status
+          echo ""
+          echo "Git status:"
+          git status --short
           
           # Configure git
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Commit
+          # Add all new files
+          echo ""
+          echo "Adding files to git..."
           git add -A
+          
+          # Check status again
+          echo "Git status after add:"
+          git status --short
+          
+          # Check if there are staged changes
+          if git diff --cached --quiet; then
+            echo "⚠️  No changes staged for commit"
+            exit 0
+          fi
+          
+          # Commit
+          echo ""
+          echo "Committing changes..."
           git commit -m "Auto-generate input.json from PR #$PR_NUMBER"
           
           # Get the target branch from the workflow event
@@ -124,10 +143,11 @@ jobs:
             TARGET_BRANCH=$(git rev-parse --abbrev-ref HEAD)
           fi
           
+          echo "Pushing to branch: $TARGET_BRANCH"
           git push origin "$TARGET_BRANCH"
           
           echo ""
-          echo "✓ Successfully created and pushed:"
+          echo "✅ Successfully created and pushed:"
           printf '%s\n' "${CREATED_FILES[@]}"
 
       - name: Post success comment
