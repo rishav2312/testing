@@ -14,8 +14,27 @@ jobs:
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout base repo
-        uses: actions/checkout@v4
+      - name: Get fork info and clone
+        id: fork_info
+        run: |
+          # Get fork owner and repo from artifact payload
+          PAYLOAD_FILE="${{ steps.pr_info.outputs.payload_file }}"
+          PAYLOAD=$(cat "$PAYLOAD_FILE")
+          
+          # Extract from payload (if available) or default
+          # We'll get fork info from the workflow_run event instead
+          FORK_OWNER="${{ github.event.workflow_run.head_repository.owner.login }}"
+          FORK_REPO="${{ github.event.workflow_run.head_repository.name }}"
+          FORK_BRANCH="${{ github.event.workflow_run.head_branch }}"
+          
+          echo "Fork Info:"
+          echo "  Owner: $FORK_OWNER"
+          echo "  Repo: $FORK_REPO"
+          echo "  Branch: $FORK_BRANCH"
+          
+          echo "fork_owner=$FORK_OWNER" >> $GITHUB_OUTPUT
+          echo "fork_repo=$FORK_REPO" >> $GITHUB_OUTPUT
+          echo "fork_branch=$FORK_BRANCH" >> $GITHUB_OUTPUT
 
       - name: Download all artifacts from previous workflow
         uses: actions/download-artifact@v4
@@ -53,7 +72,7 @@ jobs:
           echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
           echo "payload_file=$PAYLOAD_FILE" >> $GITHUB_OUTPUT
 
-      - name: Parse artifact and create files
+      - name: Parse artifact and push to fork
         if: steps.pr_info.outputs.pr_number != '0'
         run: |
           set -e
@@ -61,8 +80,12 @@ jobs:
           PR_NUMBER="${{ steps.pr_info.outputs.pr_number }}"
           PAYLOAD_FILE="${{ steps.pr_info.outputs.payload_file }}"
           
+          FORK_OWNER="${{ steps.fork_info.outputs.fork_owner }}"
+          FORK_REPO="${{ steps.fork_info.outputs.fork_repo }}"
+          FORK_BRANCH="${{ steps.fork_info.outputs.fork_branch }}"
+          
           echo "Processing PR #$PR_NUMBER"
-          echo "Payload file: $PAYLOAD_FILE"
+          echo "Pushing to fork: $FORK_OWNER/$FORK_REPO on branch $FORK_BRANCH"
           
           if [ ! -f "$PAYLOAD_FILE" ]; then
             echo "❌ Payload file not found: $PAYLOAD_FILE"
@@ -72,8 +95,6 @@ jobs:
           # Read artifact payload
           echo "Reading payload..."
           PAYLOAD=$(cat "$PAYLOAD_FILE")
-          echo "Payload content:"
-          echo "$PAYLOAD" | jq '.'
           
           # Parse JSON
           TARGETS=$(echo "$PAYLOAD" | jq -r '.targets[]')
@@ -82,6 +103,16 @@ jobs:
           echo ""
           echo "Creating input.json files for targets:"
           echo "$TARGETS"
+          
+          # Clone the fork repo
+          echo ""
+          echo "Cloning fork repository..."
+          CLONE_URL="https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/$FORK_OWNER/$FORK_REPO.git"
+          git clone --depth 1 --branch "$FORK_BRANCH" "$CLONE_URL" fork_repo
+          cd fork_repo
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           
           # Create input.json in each target directory
           CREATED_FILES=()
@@ -113,18 +144,10 @@ jobs:
           echo "Git status:"
           git status --short
           
-          # Configure git
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # Add all new files
+          # Add and commit
           echo ""
           echo "Adding files to git..."
           git add -A
-          
-          # Check status again
-          echo "Git status after add:"
-          git status --short
           
           # Check if there are staged changes
           if git diff --cached --quiet; then
@@ -132,22 +155,15 @@ jobs:
             exit 0
           fi
           
-          # Commit
-          echo ""
           echo "Committing changes..."
           git commit -m "Auto-generate input.json from PR #$PR_NUMBER"
           
-          echo "Pushing changes..."
-          
-          # Push to main branch
-          DEFAULT_BRANCH="main"
-          
-          git push origin "HEAD:refs/heads/$DEFAULT_BRANCH"
-          
-          echo "✅ Successfully pushed to $DEFAULT_BRANCH"
+          echo ""
+          echo "Pushing to fork branch: $FORK_BRANCH"
+          git push origin "$FORK_BRANCH"
           
           echo ""
-          echo "✅ Successfully created and pushed:"
+          echo "✅ Successfully created and pushed to fork:"
           printf '%s\n' "${CREATED_FILES[@]}"
 
       - name: Post success comment
