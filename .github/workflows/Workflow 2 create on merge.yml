@@ -158,6 +158,9 @@ jobs:
               return;
             }
             
+            const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
+            const createPrUrl = `${repoUrl}/pull/new/${branchName}`;
+            
             // Post comment on original PR
             try {
               await github.rest.issues.createComment({
@@ -167,15 +170,14 @@ jobs:
                 body: `✅ **Validation Complete & Files Generated**
 
 A new branch has been created with auto-generated input.json files:
-**Branch:** \`${branchName}\`
 
-🔗 **Create PR:** [Click here to create a PR from this branch](https://github.com/${{ github.repository }}/pull/new/${branchName})
 
-Or create manually:
-\`\`\`
-Branch: ${branchName}
-Target: main
-\`\`\`
+    🔗 **Create PR:** [Click here to create a PR from this branch](${createPrUrl})
+    Or create manually:
+    \`\`\`
+    Branch: ${branchName}
+    Target: main
+    \`\`\`
 
 The branch is ready for review. Once the PR is created and merged, this original PR can be merged as well.`
               });
