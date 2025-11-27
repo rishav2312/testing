@@ -139,14 +139,12 @@ jobs:
           
           echo "Pushing changes..."
           
-          # Get default branch of base repo
-          DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@refs/remotes/origin/@@')
-          echo "Base repo default branch: $DEFAULT_BRANCH"
+          # Push to main branch
+          DEFAULT_BRANCH="main"
           
-          # Push to default branch (not to fork branch)
-          git push origin "HEAD:$DEFAULT_BRANCH"
+          git push origin "HEAD:refs/heads/$DEFAULT_BRANCH"
           
-          echo "✅ Pushed to $DEFAULT_BRANCH"
+          echo "✅ Successfully pushed to $DEFAULT_BRANCH"
           
           echo ""
           echo "✅ Successfully created and pushed:"
