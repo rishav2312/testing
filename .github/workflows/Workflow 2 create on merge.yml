@@ -88,9 +88,16 @@ jobs:
           
           # Create and checkout new branch
           BRANCH_NAME="automation/pr-$PR_NUMBER-generated"
-          echo ""
-          echo "Creating branch: $BRANCH_NAME"
-          git checkout -b "$BRANCH_NAME"
+          
+          # Check if branch already exists
+          if git rev-parse --verify "$BRANCH_NAME" >/dev/null 2>&1; then
+            echo "Branch already exists: $BRANCH_NAME"
+            echo "Checking out existing branch..."
+            git checkout "$BRANCH_NAME"
+          else
+            echo "Creating new branch: $BRANCH_NAME"
+            git checkout -b "$BRANCH_NAME"
+          fi
           
           # Create input.json in each target directory
           CREATED_FILES=()
@@ -118,16 +125,20 @@ jobs:
           echo "Git status:"
           git status --short
           
-          # Add and commit
+          # Add only businessConfig files (not artifacts directory)
           echo ""
-          echo "Adding files..."
-          git add -A
+          echo "Adding businessConfig files only..."
+          git add businessConfig/
           
           # Check if there are staged changes
           if git diff --cached --quiet; then
             echo "⚠️  No changes staged for commit"
             exit 0
           fi
+          
+          # Check status again
+          echo "Git status after add:"
+          git status --short
           
           echo "Committing changes..."
           git commit -m "Auto-generate input.json from PR #$PR_NUMBER"
