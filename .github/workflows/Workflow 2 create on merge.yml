@@ -1,203 +1,432 @@
-name: Create input.json from PR artifact on merge
+name: Workflow 2 - Create Metadata Branch on PR Merge
 
 on:
-  workflow_run:
-    workflows: ["Validate PR Template & Upload Artifact"]
-    types: [completed]
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'pr-template/**'
 
 permissions:
   contents: write
   pull-requests: write
 
 jobs:
-  create-from-artifact:
-    if: github.event.workflow_run.conclusion == 'success'
+  create-metadata-branch:
+    name: Create Metadata Branch After Merge
     runs-on: ubuntu-latest
+    
     steps:
-      - name: Checkout base repo
+      - name: Checkout main branch
         uses: actions/checkout@v4
-
-      - name: Download all artifacts from previous workflow
-        uses: actions/download-artifact@v4
         with:
-          path: artifacts
-          github-token: ${{ github.token }}
-          run-id: ${{ github.event.workflow_run.id }}
-
-      - name: Extract PR number from artifact
-        id: pr_info
+          ref: main
+          fetch-depth: 0
+      
+      - name: Get merge commit information
+        id: merge-info
         run: |
-          echo "Looking for artifacts..."
-          find artifacts -type f -name "*.json" | head -5
+          echo "=== Merge Commit Information ==="
           
-          # Find the payload.json file
-          PAYLOAD_FILE=$(find artifacts -name "payload.json" -type f | head -1)
+          COMMIT_SHA=$(git rev-parse HEAD)
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          COMMIT_AUTHOR=$(git log -1 --pretty=%an)
+          COMMIT_DATE=$(git log -1 --pretty=%ai)
           
-          if [ -z "$PAYLOAD_FILE" ]; then
-            echo "❌ No payload.json found"
-            echo "pr_number=0" >> $GITHUB_OUTPUT
+          echo "Commit SHA: $COMMIT_SHA"
+          echo "Commit Author: $COMMIT_AUTHOR"
+          echo "Commit Date: $COMMIT_DATE"
+          
+          echo "commit_sha=${COMMIT_SHA}" >> $GITHUB_OUTPUT
+          echo "commit_author=${COMMIT_AUTHOR}" >> $GITHUB_OUTPUT
+          echo "commit_date=${COMMIT_DATE}" >> $GITHUB_OUTPUT
+          echo "commit_msg<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMIT_MSG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          PR_NUM=$(echo "$COMMIT_MSG" | grep -oP 'pull request #\K[0-9]+' || echo "")
+          
+          if [ -z "$PR_NUM" ]; then
+            PR_NUM=$(echo "$COMMIT_MSG" | grep -oP '\(#\K[0-9]+' || echo "")
+          fi
+          
+          echo "pr_number=${PR_NUM}" >> $GITHUB_OUTPUT
+          
+          if [ -z "$PR_NUM" ]; then
+            echo "⚠️  Could not extract PR number from commit message"
+          else
+            echo "✓ Extracted PR number: $PR_NUM"
+          fi
+      
+      - name: Verify template files were modified
+        id: verify-files
+        run: |
+          echo "=== Verifying Template Files ==="
+          
+          CHANGED_FILES=$(git diff HEAD~1 HEAD --name-only)
+          
+          echo "Changed files in this merge:"
+          echo "$CHANGED_FILES"
+          
+          if echo "$CHANGED_FILES" | grep -q "^pr-template/"; then
+            echo "template_modified=true" >> $GITHUB_OUTPUT
+            echo "✓ PR template files were modified"
+          else
+            echo "template_modified=false" >> $GITHUB_OUTPUT
+            echo "ℹ️  No PR template files were modified"
             exit 0
           fi
           
-          echo "✓ Found artifact: $PAYLOAD_FILE"
+          required_files=(
+            "pr-template/project-config.yml"
+            "pr-template/table-metadata.yml"
+            "pr-template/maintenance-config.yml"
+          )
           
-          # Extract PR number from payload
-          PR_NUMBER=$(cat "$PAYLOAD_FILE" | jq -r '.prNumber // empty')
+          for file in "${required_files[@]}"; do
+            if [ -f "$file" ]; then
+              echo "✓ File exists: $file"
+            else
+              echo "⚠️  File not found: $file (optional)"
+            fi
+          done
+      
+      - name: Setup Java
+        if: steps.verify-files.outputs.template_modified == 'true'
+        uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+          cache: gradle
+      
+      - name: Setup Git configuration
+        run: |
+          git config --global user.email "github-actions@target.com"
+          git config --global user.name "GitHub Actions Bot"
+          echo "✓ Git configured"
+      
+      - name: Extract and validate template data
+        if: steps.verify-files.outputs.template_modified == 'true'
+        id: extract-data
+        run: |
+          echo "=== Extracting Template Data ==="
           
-          if [ -z "$PR_NUMBER" ]; then
-            echo "❌ Could not extract PR number from artifact"
-            PR_NUMBER=0
+          if [ -f "pr-template/project-config.yml" ]; then
+            PROJECT_NAME=$(grep "^project_name:" pr-template/project-config.yml | cut -d' ' -f2- | sed "s/'//g" | sed 's/"//g')
+            PROJECT_LOCATION=$(grep "^project_location:" pr-template/project-config.yml | cut -d' ' -f2- | sed "s/'//g" | sed 's/"//g')
+            
+            echo "Project Name: $PROJECT_NAME"
+            echo "Project Location: $PROJECT_LOCATION"
+            
+            echo "project_name=${PROJECT_NAME}" >> $GITHUB_OUTPUT
+            echo "project_location=${PROJECT_LOCATION}" >> $GITHUB_OUTPUT
           fi
           
-          echo "PR Number: $PR_NUMBER"
-          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
-          echo "payload_file=$PAYLOAD_FILE" >> $GITHUB_OUTPUT
-
-      - name: Create branch and generate files
-        if: steps.pr_info.outputs.pr_number != '0'
+          if [ -f "pr-template/table-metadata.yml" ]; then
+            TABLE_NAME=$(grep "^table_name:" pr-template/table-metadata.yml | cut -d' ' -f2- | sed "s/'//g" | sed 's/"//g')
+            TABLE_TYPE=$(grep "^table_type:" pr-template/table-metadata.yml | cut -d' ' -f2- | sed "s/'//g" | sed 's/"//g')
+            BQ_DATASET=$(grep "^bq_dataset:" pr-template/table-metadata.yml | cut -d' ' -f2- | sed "s/'//g" | sed 's/"//g')
+            
+            echo "Table Name: $TABLE_NAME"
+            echo "Table Type: $TABLE_TYPE"
+            echo "BQ Dataset: $BQ_DATASET"
+            
+            echo "table_name=${TABLE_NAME}" >> $GITHUB_OUTPUT
+            echo "table_type=${TABLE_TYPE}" >> $GITHUB_OUTPUT
+            echo "bq_dataset=${BQ_DATASET}" >> $GITHUB_OUTPUT
+          fi
+          
+          if [ -f "pr-template/maintenance-config.yml" ]; then
+            ORPHANS_TTL=$(grep "^orphans_ttl:" pr-template/maintenance-config.yml | cut -d' ' -f2-)
+            SNAPSHOTS_TTL=$(grep "^snapshots_ttl:" pr-template/maintenance-config.yml | cut -d' ' -f2-)
+            MIN_FILES=$(grep "^min_files_input:" pr-template/maintenance-config.yml | cut -d' ' -f2-)
+            
+            echo "Orphans TTL: $ORPHANS_TTL"
+            echo "Snapshots TTL: $SNAPSHOTS_TTL"
+            echo "Min Files Input: $MIN_FILES"
+            
+            echo "orphans_ttl=${ORPHANS_TTL}" >> $GITHUB_OUTPUT
+            echo "snapshots_ttl=${SNAPSHOTS_TTL}" >> $GITHUB_OUTPUT
+            echo "min_files_input=${MIN_FILES}" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "✓ Data extraction completed"
+      
+      - name: Create metadata branch
+        if: steps.verify-files.outputs.template_modified == 'true'
+        id: create-branch
         run: |
-          set -e
+          echo "=== Creating Metadata Branch ==="
           
-          PR_NUMBER="${{ steps.pr_info.outputs.pr_number }}"
-          PAYLOAD_FILE="${{ steps.pr_info.outputs.payload_file }}"
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          BRANCH_NAME="iceflow/metadata-${TIMESTAMP}"
           
-          echo "Processing PR #$PR_NUMBER"
+          echo "Branch name: $BRANCH_NAME"
+          echo "branch_name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
           
-          if [ ! -f "$PAYLOAD_FILE" ]; then
-            echo "❌ Payload file not found: $PAYLOAD_FILE"
+          if git rev-parse --verify origin/${BRANCH_NAME} >/dev/null 2>&1; then
+            echo "⚠️  Branch already exists, using unique name"
+            NANOS=$(date +%N | cut -c1-3)
+            BRANCH_NAME="iceflow/metadata-${TIMESTAMP}-${NANOS}"
+            echo "Updated branch name: $BRANCH_NAME"
+            echo "branch_name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+          fi
+          
+          git checkout -b $BRANCH_NAME
+          echo "✓ Created branch: $BRANCH_NAME"
+      
+      - name: Generate metadata JSON
+        if: steps.verify-files.outputs.template_modified == 'true'
+        id: generate-metadata
+        run: |
+          echo "=== Generating Metadata JSON ==="
+          
+          cat > metadata.json <<'JSON_EOF'
+{
+  "metadata": {
+    "version": "1.0",
+    "generatedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+    "generatedBy": "GitHub Actions - Workflow 2",
+    "sourceRepository": "${{ github.repository }}"
+  },
+  "mergeInfo": {
+    "commitSha": "${{ steps.merge-info.outputs.commit_sha }}",
+    "commitAuthor": "${{ steps.merge-info.outputs.commit_author }}",
+    "commitDate": "${{ steps.merge-info.outputs.commit_date }}",
+    "prNumber": "${{ steps.merge-info.outputs.pr_number }}",
+    "mainBranch": "${{ github.ref }}"
+  },
+  "projectConfig": {
+    "projectName": "${{ steps.extract-data.outputs.project_name }}",
+    "projectLocation": "${{ steps.extract-data.outputs.project_location }}"
+  },
+  "tableMetadata": {
+    "tableName": "${{ steps.extract-data.outputs.table_name }}",
+    "tableType": "${{ steps.extract-data.outputs.table_type }}",
+    "bqDataset": "${{ steps.extract-data.outputs.bq_dataset }}"
+  },
+  "maintenanceConfig": {
+    "orphansTtl": ${{ steps.extract-data.outputs.orphans_ttl }},
+    "snapshotsTtl": ${{ steps.extract-data.outputs.snapshots_ttl }},
+    "minFilesInput": ${{ steps.extract-data.outputs.min_files_input }}
+  },
+  "approvalStatus": {
+    "status": "APPROVED",
+    "mergedToMain": true,
+    "readyForDeployment": true
+  }
+}
+JSON_EOF
+          
+          sed -i "s|\$(date -u +%Y-%m-%dT%H:%M:%SZ)|$(date -u +%Y-%m-%dT%H:%M:%SZ)|g" metadata.json
+          
+          echo "✓ Generated metadata.json"
+          echo ""
+          echo "=== Metadata Content ==="
+          cat metadata.json
+          echo ""
+      
+      - name: Validate generated JSON
+        if: steps.verify-files.outputs.template_modified == 'true'
+        run: |
+          echo "=== Validating Generated JSON ==="
+          
+          sudo apt-get install -y jq --quiet
+          
+          if jq empty metadata.json 2>/dev/null; then
+            echo "✓ JSON syntax is valid"
+          else
+            echo "❌ Invalid JSON syntax"
             exit 1
           fi
           
-          # Read artifact payload
-          echo "Reading payload..."
-          PAYLOAD=$(cat "$PAYLOAD_FILE")
-          echo "Payload:"
-          echo "$PAYLOAD" | jq '.'
+          required_fields=(
+            ".metadata.version"
+            ".metadata.generatedAt"
+            ".mergeInfo.commitSha"
+            ".projectConfig.projectName"
+            ".tableMetadata.tableName"
+            ".approvalStatus.status"
+          )
           
-          # Parse JSON
-          TARGETS=$(echo "$PAYLOAD" | jq -r '.targets[]')
-          DATA=$(echo "$PAYLOAD" | jq '.data')
-          
-          echo ""
-          echo "Creating input.json files for targets:"
-          echo "$TARGETS"
-          
-          # Configure git
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # Create and checkout new branch
-          BRANCH_NAME="automation/pr-$PR_NUMBER-generated"
-          
-          # Check if branch already exists
-          if git rev-parse --verify "$BRANCH_NAME" >/dev/null 2>&1; then
-            echo "Branch already exists: $BRANCH_NAME"
-            echo "Checking out existing branch..."
-            git checkout "$BRANCH_NAME"
-          else
-            echo "Creating new branch: $BRANCH_NAME"
-            git checkout -b "$BRANCH_NAME"
-          fi
-          
-          # Create input.json in each target directory
-          CREATED_FILES=()
-          while IFS= read -r target; do
-            if [ -z "$target" ]; then
-              continue
+          for field in "${required_fields[@]}"; do
+            if jq -e "$field" metadata.json >/dev/null 2>&1; then
+              value=$(jq -r "$field" metadata.json)
+              echo "✓ $field: $value"
+            else
+              echo "❌ Missing field: $field"
+              exit 1
             fi
-            
-            FILE_PATH="$target/input.json"
-            echo "Creating: $FILE_PATH"
-            
-            mkdir -p "$target"
-            echo "$DATA" | jq '.' > "$FILE_PATH"
-            
-            CREATED_FILES+=("$FILE_PATH")
-          done <<< "$TARGETS"
+          done
           
-          if [ ${#CREATED_FILES[@]} -eq 0 ]; then
-            echo "No files created"
-            exit 0
+          echo "✓ All required fields present"
+      
+      - name: Commit metadata file
+        if: steps.verify-files.outputs.template_modified == 'true'
+        run: |
+          echo "=== Committing Metadata ==="
+          
+          git add metadata.json
+          
+          COMMIT_MSG="feat: Add metadata from merged PR #${{ steps.merge-info.outputs.pr_number }}"
+          
+          if [ -z "${{ steps.merge-info.outputs.pr_number }}" ]; then
+            COMMIT_MSG="feat: Add metadata from merged commit ${{ steps.merge-info.outputs.commit_sha }}"
           fi
           
-          # Check git status
-          echo ""
-          echo "Git status:"
-          git status --short
+          git commit -m "$COMMIT_MSG"
           
-          # Add only businessConfig files (not artifacts directory)
-          echo ""
-          echo "Adding businessConfig files only..."
-          git add businessConfig/
+          echo "✓ Committed metadata file"
           
-          # Check if there are staged changes
-          if git diff --cached --quiet; then
-            echo "⚠️  No changes staged for commit"
-            exit 0
+          echo ""
+          echo "Commit details:"
+          git log -1 --oneline
+      
+      - name: Push metadata branch
+        if: steps.verify-files.outputs.template_modified == 'true'
+        id: push-branch
+        run: |
+          echo "=== Pushing Metadata Branch ==="
+          
+          git push origin ${{ steps.create-branch.outputs.branch_name }}
+          
+          if [ $? -eq 0 ]; then
+            echo "✓ Successfully pushed branch: ${{ steps.create-branch.outputs.branch_name }}"
+            echo "push_successful=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Failed to push branch"
+            echo "push_successful=false" >> $GITHUB_OUTPUT
+            exit 1
           fi
-          
-          # Check status again
-          echo "Git status after add:"
-          git status --short
-          
-          echo "Committing changes..."
-          git commit -m "Auto-generate input.json from PR #$PR_NUMBER"
-          
-          echo ""
-          echo "Pushing branch: $BRANCH_NAME"
-          git push origin "$BRANCH_NAME"
-          
-          # Save branch name for next step
-          echo "branch_name=$BRANCH_NAME" >> $GITHUB_ENV
-          echo "pr_number=$PR_NUMBER" >> $GITHUB_ENV
-          
-          echo ""
-          echo "✅ Successfully created and pushed:"
-          printf '%s\n' "${CREATED_FILES[@]}"
-
-      - name: Post comment with PR creation link
-        if: steps.pr_info.outputs.pr_number != '0'
+      
+      - name: Create pull request for metadata branch
+        if: steps.verify-files.outputs.template_modified == 'true' && steps.push-branch.outputs.push_successful == 'true'
+        id: create-pr
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const prNumber = parseInt('${{ steps.pr_info.outputs.pr_number }}');
-            const branchName = '${{ env.branch_name }}';
-            
-            if (!prNumber || !branchName) {
-              console.log('Missing PR number or branch name');
-              return;
-            }
-            
-            const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
-            const createPrUrl = `${repoUrl}/pull/new/${branchName}`;
-            
-            // Post comment on original PR
-            try {
-              const message = [
-                "✅ Validation Complete & Files Generated",
-                "",
-                "A new branch has been created with auto-generated input.json files:",
-                "",
-                "Branch: " + branchName,
-                "",
-                "🔗 Create PR: " + createPrUrl,
-                "",
-                "Or create manually:",
-                "- Branch: " + branchName,
-                "- Target: main",
-                "",
-                "The branch is ready for review. Once the PR is created and merged, this original PR can be merged as well."
-              ].join("\n");
+            const result = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '📊 Auto-generated Metadata from Merged PR #${{ steps.merge-info.outputs.pr_number }}',
+              head: '${{ steps.create-branch.outputs.branch_name }}',
+              base: 'main',
+              body: `## Metadata Update
 
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: prNumber,
-                body: message
-              });
-              
-              console.log(`✅ Posted comment with branch and PR creation link`);
-            } catch (error) {
-              console.log(`Error posting comment: ${error.message}`);
-            }
+This PR contains auto-generated metadata from a merged PR.
+
+### Source Information
+- **PR Number**: #${{ steps.merge-info.outputs.pr_number }}
+- **Commit SHA**: \`${{ steps.merge-info.outputs.commit_sha }}\`
+- **Commit Author**: ${{ steps.merge-info.outputs.commit_author }}
+- **Merge Date**: ${{ steps.merge-info.outputs.commit_date }}
+
+### Contents
+- \`metadata.json\` - Extracted metadata in JSON format
+
+### Approval Status
+- ✅ Source PR was approved and merged
+- ✅ Metadata was automatically generated
+- ✅ Ready for review and merge
+
+### Next Steps
+1. Review the metadata.json file
+2. If correct, merge this PR
+3. If changes needed, request changes
+
+---
+*Generated automatically by Workflow 2 on PR merge*`,
+              draft: false
+            });
+            
+            console.log('✓ Created PR: ' + result.data.html_url);
+            console.log('PR Number: ' + result.data.number);
+      
+      - name: Comment on original PR (if PR number found)
+        if: steps.verify-files.outputs.template_modified == 'true' && steps.push-branch.outputs.push_successful == 'true' && steps.merge-info.outputs.pr_number != ''
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: ${{ steps.merge-info.outputs.pr_number }},
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `✅ **Workflow 2 Completed**
+
+Your PR has been merged and Workflow 2 has automatically:
+
+1. ✓ Created metadata branch: \`${{ steps.create-branch.outputs.branch_name }}\`
+2. ✓ Generated \`metadata.json\` from your template
+3. ✓ Pushed changes to the metadata branch
+4. ✓ Created a new PR for metadata review
+
+**Metadata PR**: #[check the latest PR in the repo]
+
+The metadata is now ready for review. Once the metadata PR is merged, your changes will be fully processed.`
+            });
+      
+      - name: Generate summary report
+        if: always() && steps.verify-files.outputs.template_modified == 'true'
+        run: |
+          echo "=== Workflow 2 Summary Report ==="
+          echo ""
+          echo "**Status**: ${{ job.status }}"
+          echo "**Branch Created**: ${{ steps.create-branch.outputs.branch_name }}"
+          echo "**Metadata Generated**: Yes"
+          echo "**Files Pushed**: ✓"
+          echo ""
+          echo "**Project Info**:"
+          echo "  - Name: ${{ steps.extract-data.outputs.project_name }}"
+          echo "  - Location: ${{ steps.extract-data.outputs.project_location }}"
+          echo ""
+          echo "**Table Info**:"
+          echo "  - Name: ${{ steps.extract-data.outputs.table_name }}"
+          echo "  - Type: ${{ steps.extract-data.outputs.table_type }}"
+          echo "  - Dataset: ${{ steps.extract-data.outputs.bq_dataset }}"
+          echo ""
+          echo "**Maintenance Config**:"
+          echo "  - Orphans TTL: ${{ steps.extract-data.outputs.orphans_ttl }} hours"
+          echo "  - Snapshots TTL: ${{ steps.extract-data.outputs.snapshots_ttl }} hours"
+          echo "  - Min Files Input: ${{ steps.extract-data.outputs.min_files_input }}"
+          echo ""
+      
+      - name: Notify on success
+        if: success() && steps.verify-files.outputs.template_modified == 'true'
+        run: |
+          echo "✅ Workflow 2 completed successfully!"
+          echo ""
+          echo "Metadata branch created and pushed."
+          echo "A new PR was created for metadata review."
+      
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "❌ Workflow 2 failed!"
+          echo ""
+          echo "Please check the logs above for details."
+
+  cleanup-old-branches:
+    name: Cleanup Old Metadata Branches
+    needs: create-metadata-branch
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: List old metadata branches
+        run: |
+          echo "=== Listing Metadata Branches ==="
+          
+          git branch -r | grep "iceflow/metadata" | sort
+      
+      - name: Cleanup branches older than 30 days
+        run: |
+          echo "=== Cleaning up old branches (30+ days) ==="
+          echo "ℹ️  Skipping automatic cleanup (optional feature)"
