@@ -80,7 +80,14 @@ jobs:
             }
             
             // Create comment
-            const comment = `## PR Template Validation Results\n\n${validationResults.join('\n')}\n\n${missingFields.length > 0 ? `### ⚠️ Missing Fields\n${missingFields.map(f => \`- \${f}\`).join('\n')}\n\nPlease fill all required fields before merging.` : '### ✅ All fields are valid!'}`;
+            let comment = '## PR Template Validation Results\n\n' + validationResults.join('\n') + '\n\n';
+            
+            if (missingFields.length > 0) {
+              const missingList = missingFields.map(f => '- ' + f).join('\n');
+              comment += '### ⚠️ Missing Fields\n' + missingList + '\n\nPlease fill all required fields before merging.';
+            } else {
+              comment += '### ✅ All fields are valid!';
+            }
             
             // Post comment
             await github.rest.issues.createComment({
