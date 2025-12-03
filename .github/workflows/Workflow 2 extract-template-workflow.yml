@@ -195,9 +195,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "chore: auto-generate input.json from PR template
-
-Generated input.json files in affected businessConfig directories based on PR template data."
+            git commit -m "chore: auto-generate input.json from PR template Generated input.json files in affected businessConfig directories based on PR template data."
             
             # Configure git to use token for pushing
             git remote set-url origin "https://github-actions[bot]:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git"
