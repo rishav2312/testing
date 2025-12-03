@@ -123,10 +123,11 @@ jobs:
               templateData[field] = '';
             });
             
-            // Parse fields from PR description
+            // Parse fields from PR description (works with both "**Field**:" and "Field:" formats)
             for (let i = 0; i < lines.length; i++) {
               const line = lines[i];
-              const match = line.match(/^\*\*([^*]+)\*\*:\s*(.*)/);
+              // Match both "**Field**:" and "Field:" formats
+              const match = line.match(/^(?:\*\*)?([^*:]+?)(?:\*\*)?\s*:\s*(.*)/);
               
               if (match) {
                 const fieldName = match[1].trim();
@@ -139,7 +140,8 @@ jobs:
                   let j = i + 1;
                   while (j < lines.length) {
                     const nextLine = lines[j];
-                    if (nextLine.match(/^\*\*/)) {
+                    // Stop if we hit another field (contains ":")
+                    if (nextLine.match(/^(?:\*\*)?[^*:]+?(?:\*\*)?\s*:/)) {
                       break;
                     }
                     const trimmedLine = nextLine.trim();
