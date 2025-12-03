@@ -1,9 +1,10 @@
 name: Extract Template and Generate Input.json
 
 on:
-  pull_request_target:
-    branches: [ github_actions ]
+  pull_request:
     types: [closed]
+    branches:
+      - main
 
 permissions:
   contents: write  # Required to commit the new JSON files back to the repo
