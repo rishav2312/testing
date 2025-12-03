@@ -180,14 +180,29 @@ jobs:
             
             core.setOutput('created-files', createdFiles.join(','));
 
-      - name: Auto commit and push changes
-        uses: stefanzweifel/git-auto-commit-action@v5
+      - name: Create Pull Request with input.json
+        id: cpr
+        uses: peter-evans/create-pull-request@v5
         with:
-          commit_message: "chore: auto-generate input.json from PR template"
-          commit_options: '--no-verify'
-          file_pattern: 'businessConfig/**/input.json'
-          commit_user_name: 'github-actions[bot]'
-          commit_user_email: 'github-actions[bot]@users.noreply.github.com'
-          branch: main
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: auto-generate input.json from PR template"
+          title: "chore: auto-generate input.json from merged PR"
+          body: |
+            ## Auto-generated Changes
+            
+            This PR contains auto-generated `input.json` files from the merged PR template.
+            
+            ### Generated Files
+            - `businessConfig/**/input.json`
+            
+            **This PR was automatically created by the Extract Template workflow.**
+          branch: create-input-json-${{ github.run_id }}
+          delete-branch: true
+          assignees: ${{ github.actor }}
+          labels: "automated,input-json"
+
+      - name: Auto-merge input.json PR
+        if: steps.cpr.outputs.pull-request-operation == 'created'
+        uses: peter-evans/enable-pull-request-automerge@v3
+        with:
+          pull-request-number: ${{ steps.cpr.outputs.pull-request-number }}
+          merge-method: squash
