@@ -1,69 +1,28 @@
 name: Extract Template and Generate Input.json
 
 on:
-  push:
+  pull_request:
+    types: [closed]
     branches:
       - main
 
+permissions:
+  contents: write  # Required to commit the new JSON files back to the repo
+  pull-requests: read
+
 jobs:
   extract-and-generate:
+    # Only run if the PR was actually merged (not just closed without merging)
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          ref: main # Ensure we are on the main branch to push changes
           fetch-depth: 0
 
-      - name: Get PR information
-        id: get-pr
-        uses: actions/github-script@v7
-        with:
-          script: |
-            let prDescription = '';
-            let prNumber = null;
-            
-            if (context.eventName === 'pull_request') {
-              // If triggered by PR event, use PR description directly
-              prDescription = context.payload.pull_request.body || '';
-              prNumber = context.payload.pull_request.number;
-              core.info(`Processing merged PR #${prNumber}`);
-            } else if (context.eventName === 'push') {
-              // If triggered by push, find the associated PR
-              const commits = context.payload.commits || [];
-              if (commits.length > 0) {
-                const commitSha = commits[commits.length - 1].id;
-                try {
-                  const prs = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    commit_sha: commitSha
-                  });
-                  
-                  if (prs.data.length > 0) {
-                    // Get the most recent PR
-                    const pr = prs.data[0];
-                    prDescription = pr.body || '';
-                    prNumber = pr.number;
-                    core.info(`Found associated PR #${prNumber} for commit ${commitSha}`);
-                  } else {
-                    core.warning('No associated PR found for this commit - using commit message');
-                    // Fallback: try to use commit message
-                    prDescription = commits[commits.length - 1].message || '';
-                  }
-                } catch (error) {
-                  core.warning(`Could not fetch associated PR: ${error.message}`);
-                }
-              }
-            }
-            
-            core.setOutput('pr-description', prDescription);
-            core.setOutput('pr-number', prNumber || 'N/A');
-            
-            if (!prDescription) {
-              core.warning('No PR description found');
-            }
-
-      - name: Get changed files
+      - name: Get Changed Files
         id: changed-files
         uses: tj-actions/changed-files@v42
         with:
@@ -77,14 +36,12 @@ jobs:
           CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
         with:
           script: |
-            const changedFiles = process.env.CHANGED_FILES.split('\n').filter(f => f.trim());
+            const changedFiles = process.env.CHANGED_FILES.split(' ').filter(f => f.trim());
             
             if (changedFiles.length === 0) {
               core.warning('No businessConfig files changed');
               return;
             }
-            
-            core.info(`Changed files: ${changedFiles.join(', ')}`);
             
             // Extract all unique second-level directories
             const directories = new Set();
@@ -108,8 +65,9 @@ jobs:
       - name: Extract template and create input.json files
         id: extract
         uses: actions/github-script@v7
+        # Direct access to PR Body via event payload - No complex API calls needed!
         env:
-          PR_DESCRIPTION: ${{ steps.get-pr.outputs.pr-description }}
+          PR_DESCRIPTION: ${{ github.event.pull_request.body }}
           TARGET_DIRS: ${{ steps.affected-dirs.outputs.target-dirs }}
         with:
           script: |
@@ -117,14 +75,16 @@ jobs:
             const path = require('path');
             
             const prDescription = process.env.PR_DESCRIPTION || '';
-            const targetDirs = process.env.TARGET_DIRS.split(',').filter(d => d.trim());
+            const targetDirsStr = process.env.TARGET_DIRS;
             
-            if (targetDirs.length === 0) {
-              core.warning('No target directories to process');
-              return;
+            if (!targetDirsStr) {
+               core.warning('No target directories to process');
+               return;
             }
+
+            const targetDirs = targetDirsStr.split(',').filter(d => d.trim());
             
-            // Parse template from PR description
+            // 1. Define Mapping
             const fieldMapping = {
               'Channels': 'channels',
               'Headless': 'headless',
@@ -143,17 +103,13 @@ jobs:
             };
             
             const templateData = {};
+            // Initialize empty
+            Object.values(fieldMapping).forEach(field => templateData[field] = '');
+
+            // 2. Parse Description
             const lines = prDescription.split('\n');
-            
-            // Initialize all fields
-            Object.values(fieldMapping).forEach(field => {
-              templateData[field] = '';
-            });
-            
-            // Parse fields from PR description (works with both "**Field**:" and "Field:" formats)
             for (let i = 0; i < lines.length; i++) {
               const line = lines[i];
-              // Match both "**Field**:" and "Field:" formats
               const match = line.match(/^(?:\*\*)?([^*:]+?)(?:\*\*)?\s*:\s*(.*)/);
               
               if (match) {
@@ -162,64 +118,48 @@ jobs:
                 
                 if (jsonFieldName) {
                   let fieldValue = match[2].trim();
-                  
-                  // For multi-line fields, collect subsequent lines until next field
                   let j = i + 1;
                   while (j < lines.length) {
                     const nextLine = lines[j];
-                    // Stop if we hit another field (contains ":")
-                    if (nextLine.match(/^(?:\*\*)?[^*:]+?(?:\*\*)?\s*:/)) {
-                      break;
-                    }
+                    if (nextLine.match(/^(?:\*\*)?[^*:]+?(?:\*\*)?\s*:/)) break;
                     const trimmedLine = nextLine.trim();
-                    if (trimmedLine) {
-                      fieldValue += (fieldValue ? '\n' : '') + trimmedLine;
-                    }
+                    if (trimmedLine) fieldValue += (fieldValue ? '\n' : '') + trimmedLine;
                     j++;
                   }
-                  
                   templateData[jsonFieldName] = fieldValue;
                 }
               }
             }
             
-            core.info(`Extracted template data: ${JSON.stringify(templateData, null, 2)}`);
+            core.info(`Extracted Data: ${JSON.stringify(templateData, null, 2)}`);
             
-            // Create input.json in each affected directory
+            // 3. Write Files
             const createdFiles = [];
             for (const dir of targetDirs) {
               const targetPath = `businessConfig/${dir.trim()}`;
               const inputJsonPath = path.join(targetPath, 'input.json');
               
-              // Create directory if it doesn't exist
               if (!fs.existsSync(targetPath)) {
                 fs.mkdirSync(targetPath, { recursive: true });
               }
               
-              // Write input.json
               fs.writeFileSync(inputJsonPath, JSON.stringify(templateData, null, 2));
               createdFiles.push(inputJsonPath);
               core.info(`Created ${inputJsonPath}`);
             }
-            
-            core.setOutput('created-files', createdFiles.join(','));
 
       - name: Commit and push changes
-        if: always()
+        if: steps.affected-dirs.outputs.target-dirs != ''
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
-          # Add all input.json files
           git add businessConfig/**/input.json
           
-          # Check if there are changes to commit
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "chore: auto-generate input.json from PR template
-
-Generated input.json files in affected businessConfig directories based on PR template data."
-            git push
+            git commit -m "chore: auto-generate input.json from PR #${{ github.event.pull_request.number }}"
+            git push origin main
             echo "✅ Successfully committed and pushed input.json files"
           fi
