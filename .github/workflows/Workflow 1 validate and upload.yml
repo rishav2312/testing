@@ -34,30 +34,37 @@ jobs:
             const fieldValues = {};
             const lines = body.split('\n');
             
-            // Parse template fields
+            // Parse template fields (works with plain text format like "Channels: value")
             for (let i = 0; i < lines.length; i++) {
               const line = lines[i];
-              const match = line.match(/^\*\*([^*]+)\*\*:\s*(.*)/);
+              // Match both "**Field**:" and "Field:" formats
+              const match = line.match(/^(?:\*\*)?([^*:]+?)(?:\*\*)?\s*:\s*(.*)/);
               
               if (match) {
                 const fieldName = match[1].trim();
                 let fieldValue = match[2].trim();
                 
-                // For multi-line fields, collect subsequent lines until next field
-                let j = i + 1;
-                while (j < lines.length) {
-                  const nextLine = lines[j];
-                  if (nextLine.match(/^\*\*/)) {
-                    break;
-                  }
-                  const trimmedLine = nextLine.trim();
-                  if (trimmedLine) {
-                    fieldValue += '\n' + trimmedLine;
-                  }
-                  j++;
-                }
+                // Check if this is a known field
+                const isKnownField = requiredFields.includes(fieldName);
                 
-                fieldValues[fieldName] = fieldValue;
+                if (isKnownField) {
+                  // For multi-line fields, collect subsequent lines until next field
+                  let j = i + 1;
+                  while (j < lines.length) {
+                    const nextLine = lines[j];
+                    // Stop if we hit another field (contains ":")
+                    if (nextLine.match(/^(?:\*\*)?[^*:]+?(?:\*\*)?\s*:/)) {
+                      break;
+                    }
+                    const trimmedLine = nextLine.trim();
+                    if (trimmedLine) {
+                      fieldValue += '\n' + trimmedLine;
+                    }
+                    j++;
+                  }
+                  
+                  fieldValues[fieldName] = fieldValue;
+                }
               }
             }
             
