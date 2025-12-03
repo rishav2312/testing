@@ -180,25 +180,11 @@ jobs:
             
             core.setOutput('created-files', createdFiles.join(','));
 
-      - name: Commit and push changes
-        if: always()
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          
-          # Add all input.json files
-          git add businessConfig/**/input.json
-          
-          # Check if there are changes to commit
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "chore: auto-generate input.json from PR template Generated input.json files in affected businessConfig directories based on PR template data."
-            
-            # Configure git to use token for pushing
-            git remote set-url origin "https://github-actions[bot]:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git"
-            git push
-            echo "✅ Successfully committed and pushed input.json files"
-          fi
+      - name: Auto commit and push changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: auto-generate input.json from PR template"
+          commit_options: '--no-verify'
+          file_pattern: 'businessConfig/**/input.json'
+          commit_user_name: 'github-actions[bot]'
+          commit_user_email: 'github-actions[bot]@users.noreply.github.com'
