@@ -1,11 +1,6 @@
 name: Extract Template and Generate Input.json
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'businessConfig/**'
   pull_request:
     types: [closed]
     branches:
@@ -15,8 +10,8 @@ on:
 
 jobs:
   extract-and-generate:
-    # Only run if PR was merged or on push event
-    if: github.event_name == 'push' || (github.event.pull_request.merged == true)
+    # Only run if PR was merged
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -29,41 +24,16 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            let prDescription = '';
+            // Get PR description from the merged pull request event
+            const prDescription = context.payload.pull_request.body || '';
+            const prNumber = context.payload.pull_request.number;
             
-            if (context.eventName === 'pull_request') {
-              // If triggered by PR close event, use PR description directly
-              prDescription = context.payload.pull_request.body || '';
-              core.setOutput('pr-description', prDescription);
-              core.setOutput('pr-number', context.payload.pull_request.number);
-            } else if (context.eventName === 'push') {
-              // If triggered by push, find the associated PR
-              const commits = context.payload.commits || [];
-              if (commits.length > 0) {
-                const commitSha = commits[commits.length - 1].id;
-                try {
-                  const prs = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    commit_sha: commitSha
-                  });
-                  
-                  if (prs.data.length > 0) {
-                    // Get the most recent PR
-                    const pr = prs.data[0];
-                    prDescription = pr.body || '';
-                    core.setOutput('pr-description', prDescription);
-                    core.setOutput('pr-number', pr.number);
-                    core.info(`Found associated PR #${pr.number}`);
-                  } else {
-                    core.warning('No associated PR found for this commit');
-                    core.setOutput('pr-description', '');
-                  }
-                } catch (error) {
-                  core.warning(`Could not fetch associated PR: ${error.message}`);
-                  core.setOutput('pr-description', '');
-                }
-              }
+            core.setOutput('pr-description', prDescription);
+            core.setOutput('pr-number', prNumber);
+            core.info(`Processing merged PR #${prNumber}`);
+            
+            if (!prDescription) {
+              core.warning('PR description is empty');
             }
 
       - name: Get changed files
