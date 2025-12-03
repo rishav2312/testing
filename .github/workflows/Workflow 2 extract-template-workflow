@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - main
-    paths:
-      - 'businessConfig/**'
 
 jobs:
   extract-and-generate:
