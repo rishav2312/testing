@@ -45,10 +45,14 @@ jobs:
                 
                 // For multi-line fields, collect subsequent lines until next field
                 let j = i + 1;
-                while (j < lines.length && !lines[j].match(/^\*\*/)) {
-                  const nextLine = lines[j].trim();
-                  if (nextLine) {
-                    fieldValue += '\n' + nextLine;
+                while (j < lines.length) {
+                  const nextLine = lines[j];
+                  if (nextLine.match(/^\*\*/)) {
+                    break;
+                  }
+                  const trimmedLine = nextLine.trim();
+                  if (trimmedLine) {
+                    fieldValue += '\n' + trimmedLine;
                   }
                   j++;
                 }
