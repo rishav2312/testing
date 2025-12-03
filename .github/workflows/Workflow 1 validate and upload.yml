@@ -79,28 +79,18 @@ jobs:
               }
             }
             
-            // Create comment
-            let comment = '## PR Template Validation Results\n\n' + validationResults.join('\n') + '\n\n';
-            
-            if (missingFields.length > 0) {
-              const missingList = missingFields.map(f => '- ' + f).join('\n');
-              comment += '### ⚠️ Missing Fields\n' + missingList + '\n\nPlease fill all required fields before merging.';
-            } else {
-              comment += '### ✅ All fields are valid!';
-            }
-            
-            // Post comment
-            await github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: comment
-            });
-            
-            // Store results for next step
+            // Store results
             core.setOutput('validation-passed', missingFields.length === 0);
             core.setOutput('missing-fields', missingFields.join(', '));
             
+            // Log validation results
+            console.log('Validation Results:');
+            validationResults.forEach(result => console.log(result));
+            
             if (missingFields.length > 0) {
+              console.log('\n❌ Missing Fields:');
+              missingFields.forEach(field => console.log(`  - ${field}`));
               core.setFailed(`Validation failed. Missing fields: ${missingFields.join(', ')}`);
+            } else {
+              console.log('\n✅ All fields are valid!');
             }
